@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aamil Farms Pond Ledger</title>
+<meta name="description" content="Pond records, water quality, feed and finances for pangasius and IMC culture">
+<meta name="theme-color" content="#0a7466" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0c1b17" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Pond Ledger">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=Hind:wght@400;500;600&family=Noto+Sans+Devanagari:wght@500;700&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1 id="ttl">Pond Ledger</h1>
+    <select id="siteSel" class="ctl" aria-label="Site"></select>
+    <div class="ctl seg" role="group" aria-label="Language">
+      <button id="lEn" type="button" aria-pressed="true">EN</button>
+      <button id="lHi" type="button" aria-pressed="false">हिं</button>
+    </div>
+    <button id="acctBtn" type="button" class="ico-btn" data-act="acct" aria-label="Account" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.400 3.600-7 8-7s8 2.600 8 7"/></svg></button>
+  </header>
+  <div id="banner"></div>
+  <main id="view" class="stack"></main>
+</div>
+<nav class="tabs" aria-label="Sections"><div class="in" id="tabs"></div></nav>
+<div id="scrim" hidden><div id="sheet" role="dialog" aria-modal="true" aria-labelledby="shTtl"></div></div>
+<script src="config.js"></script>
+<script src="i18n.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
