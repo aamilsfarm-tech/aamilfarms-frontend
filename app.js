@@ -24,8 +24,9 @@ function sum(arr, f) { return arr.reduce(function (a, x) { return a + (f(x) || 0
 function pondStats(p) {
   var E = entriesOf(p.id);
   var feeds = E.filter(function (e) { return e.type === "feed"; });
-  var feedKg = sum(feeds, function (e) { return e.kg; });
-  var feedCost = sum(feeds, function (e) { return (e.kg || 0) * (e.rate || 0); });
+  var blks = E.filter(function (e) { return e.type === "block"; });
+  var feedKg = sum(feeds, function (e) { return e.kg; }) + sum(blks, blockKg);
+  var feedCost = sum(feeds, function (e) { return (e.kg || 0) * (e.rate || 0); }) + sum(blks, function (b) { return blockKg(b) * (b.rate || 0); });
   var mort = sum(E.filter(function (e) { return e.type === "mort"; }), function (e) { return e.count; });
   var samples = E.filter(function (e) { return e.type === "sample"; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
   var sales = E.filter(function (e) { return e.type === "sale"; });
@@ -257,6 +258,10 @@ function viewOver() {
       items += '<div class="row stripe-' + (worst(fl) === "crit" ? "crit" : "warn") + '"><div><div class="t">' + esc(p.name) + '</div><div class="s">' + esc(dshort(w.date)) + (age >= 2 ? " · " + esc(t("staleReading", { n: age })) : "") + '</div><div class="pills">' + flagPills(fl) + "</div></div></div>";
     }
   });
+  dueBlocks().forEach(function (p) {
+    var bs = blockState(p);
+    items += '<button type="button" class="row stripe-warn" data-act="tab" data-id="feed"><div><div class="t">' + esc(p.name) + '</div><div class="s">' + esc(t("blockEnded", { date: dshort(bs.end) })) + " · " + esc(t("dueNext")) + "</div></div></button>";
+  });
   h += '<section><div class="sec-h"><h2>' + esc(t("attention")) + '</h2></div><div class="list">' + (items || '<div class="row"><div class="s">' + esc(t("allGood")) + "</div></div>") + "</div></section>";
   var cult = ["pangasius", "imc"].map(function (sp) {
     var L = act.filter(function (p) { return (p.species || "pangasius") === sp; });
@@ -283,6 +288,7 @@ function viewPonds() {
 function entryLine(e) {
   var tp = e.type;
   if (tp === "water") return [e.ph != null ? "pH " + e.ph : "", e.dox != null ? "DO " + e.dox : "", e.temp != null ? e.temp + " °C" : "", e.nh3 != null ? "NH₃ " + e.nh3 : ""].filter(Boolean).join(" · ");
+  if (tp === "block") return t("blockLine", { k: nf(e.kgDay, 1), d: e.days, t: nf(blockKg(e)) }) + (e.endWt ? " · ~" + nf(e.endWt) + " g" : "");
   if (tp === "feed") return nf(e.kg, 1) + " kg" + (e.rate ? " @ ₹" + nf(e.rate, 1) : "") + (e.from ? " · " + dshort(e.from) + " – " + dshort(e.date) : "");
   if (tp === "sample") return nf(e.avgWt) + " g" + (e.n ? " (" + e.n + ")" : "");
   if (tp === "mort") return nf(e.count) + " " + t("eMort").toLowerCase();
@@ -290,7 +296,7 @@ function entryLine(e) {
   if (tp === "sale") return nf(e.kg, 1) + " kg" + (e.rate ? " @ ₹" + nf(e.rate, 1) : "") + " · " + inr(e.amount || 0);
   return "";
 }
-var TYPE_KEY = { water: "eWater", feed: "eFeed", sample: "eSample", mort: "eMort", expense: "eExpense", sale: "eSale" };
+var TYPE_KEY = { block: "eBlock", water: "eWater", feed: "eFeed", sample: "eSample", mort: "eMort", expense: "eExpense", sale: "eSale" };
 function entryRows(types, limit) {
   var ids = visibleIds();
   var L = S.entries.filter(function (e) { return types.indexOf(e.type) >= 0 && ids[e.pondId]; })
@@ -309,17 +315,184 @@ function viewWater() {
   return h + (rows ? '<div class="list">' + rows + "</div>" : emptyBox("emptyWaterT", "emptyWaterB"));
 }
 
+/* ---- feed blocks: feed X kg/day for N days, then recalculate for the next block ---- */
+var CURVE = {
+  pangasius: [[20, 8], [60, 5], [200, 3.5], [450, 2.5], [800, 2], [1200, 1.5]],
+  imc: [[20, 6], [60, 4], [200, 3], [450, 2.2], [800, 1.7], [1200, 1.5]]
+};
+var QUAL = { good: 1.5, avg: 1.8, poor: 2.2 };
+function r1(x) { return Math.round(x * 10) / 10; }
+function addDays(d, n) { var x = new Date(d + "T00:00:00"); x.setDate(x.getDate() + n); return x.toLocaleDateString("en-CA"); }
+function pctAt(p, w) {
+  if (p.feedMode === "fixed" && p.feedPct > 0) return p.feedPct;
+  var C = CURVE[p.species === "imc" ? "imc" : "pangasius"];
+  if (w <= C[0][0]) return C[0][1];
+  for (var i = 0; i < C.length - 1; i++) if (w <= C[i + 1][0]) return C[i][1] + (C[i + 1][1] - C[i][1]) * (w - C[i][0]) / (C[i + 1][0] - C[i][0]);
+  return C[C.length - 1][1];
+}
+function qualityKey(p) {
+  if (p.quality && p.quality !== "auto") return p.quality;
+  var T = today(), ws = entriesOf(p.id, "water").filter(function (e) { return dayDiff(e.date, T) <= 21; });
+  if (!ws.length) return "avg";
+  var bad = ws.filter(function (e) { return waterFlags(e).length > 0; }).length / ws.length;
+  return bad === 0 ? "good" : (bad <= 0.3 ? "avg" : "poor");
+}
+function blockDaysFor(p, wt) { var d = parseInt(p.blockDays, 10); if (d > 0) return d; return wt < 100 ? 7 : (wt < 500 ? 10 : 15); }
+function endWt(w0, kgDay, days, fcr, N) { return w0 + days * kgDay / fcr * 1000 / N; }
+function calcBlock(p, w0, N, days, fcr) {
+  var F = N * w0 / 1000 * pctAt(p, w0) / 100;
+  for (var i = 0; i < 15; i++) { var avg = w0 + days * F / fcr * 500 / N; F = N * avg / 1000 * pctAt(p, avg) / 100; }
+  var kg = F >= 10 ? Math.round(F * 2) / 2 : r1(F);
+  return { kgDay: kg, end: endWt(w0, kg, days, fcr, N), total: Math.round(kg * days) };
+}
+/* estimated body weight today: from stocking, samples and the growth the feed blocks were planned for */
+function weightNow(p) {
+  var smp = entriesOf(p.id, "sample").filter(function (e) { return e.avgWt; }).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+  var lastS = smp.length ? smp[smp.length - 1].date : null, pts = [];
+  if (p.stockDate && p.seedWt) pts.push({ d: p.stockDate, w: p.seedWt });
+  smp.forEach(function (e) { pts.push({ d: e.date, w: e.avgWt }); });
+  entriesOf(p.id, "block").forEach(function (b) {
+    if (lastS && b.date <= lastS) return;
+    if (p.stockDate && b.date < p.stockDate) return;
+    if (b.startWt) pts.push({ d: b.date, w: b.startWt });
+    if (b.endWt) pts.push({ d: addDays(b.date, b.days), w: b.endWt });
+  });
+  if (!pts.length) return null;
+  pts.sort(function (a, b) { return a.d < b.d ? -1 : (a.d > b.d ? 1 : 0); });
+  var T = today(), n = pts.length, wt;
+  if (T <= pts[0].d) wt = pts[0].w;
+  else if (T >= pts[n - 1].d) {
+    var last = pts[n - 1], age = dayDiff(last.d, T), adg = null;
+    if (n >= 2) { var gap = dayDiff(pts[n - 2].d, last.d); if (gap > 0) adg = Math.max(0, (last.w - pts[n - 2].w) / gap); }
+    wt = last.w + (adg == null ? (p.species === "imc" ? 3 : 8) * age : adg * Math.min(age, 30));
+  } else {
+    for (var i = 0; i < n - 1; i++) if (T >= pts[i].d && T <= pts[i + 1].d) {
+      var span = dayDiff(pts[i].d, pts[i + 1].d), f = span > 0 ? dayDiff(pts[i].d, T) / span : 1;
+      wt = pts[i].w + (pts[i + 1].w - pts[i].w) * f; break;
+    }
+  }
+  return { wt: wt, sampleAge: lastS ? dayDiff(lastS, T) : null };
+}
+function blockKg(b) { var el = Math.max(0, Math.min(b.days, dayDiff(b.date, today()) + 1)); return (b.kgDay || 0) * el; }
+function lastFeedRate(pid) {
+  var L = entriesOf(pid, "feed").concat(entriesOf(pid, "block")).filter(function (e) { return e.rate; }).sort(function (a, b) { return a.date < b.date ? 1 : -1; });
+  return L[0] ? L[0].rate : null;
+}
+function blockState(p) {
+  var bs = entriesOf(p.id, "block").sort(function (a, b) { return a.date < b.date ? -1 : 1; }), b = bs[bs.length - 1];
+  if (!b) return { s: "none" };
+  var end = addDays(b.date, b.days - 1), T = today();
+  if (T < b.date) return { s: "running", b: b, end: end, day: 0 };
+  if (T <= end) return { s: "running", b: b, end: end, day: dayDiff(b.date, T) + 1 };
+  return { s: "due", b: b, end: end, ago: dayDiff(end, T) };
+}
+function blockStart(p) {
+  if (!(p.seed > 0 && p.seedWt && p.stockDate)) return null;
+  var st = pondStats(p), w = weightNow(p); if (!w || st.alive <= 0) return null;
+  var days = blockDaysFor(p, w.wt), fq = qualityKey(p), fcr = QUAL[fq];
+  return { st: st, w: w, days: days, fq: fq, fcr: fcr, c: calcBlock(p, w.wt, st.alive, days, fcr) };
+}
+function dueBlocks() { return visiblePonds().filter(function (p) { return p.status !== "harvested" && blockState(p).s === "due"; }); }
+
+function planHtml() {
+  var ps = visiblePonds().filter(function (p) { return p.status !== "harvested"; });
+  if (!ps.length) return "";
+  var perDay = 0, T = today();
+  var cards = ps.map(function (p) {
+    var bs = blockState(p), sg = blockStart(p), name = '<div class="t">' + esc(p.name);
+    if (!sg && bs.s === "none") return '<div class="row"><div>' + name + '</div><div class="s">' + esc(t("needSeed")) + "</div></div></div>";
+    var pills = "", lw = latestWater(p.id);
+    if (lw && dayDiff(lw.date, T) <= 3) {
+      if ((lw.dox != null && lw.dox < 3) || (lw.nh3 != null && lw.nh3 > 1)) pills += '<span class="pill crit">' + esc(t("holdFeed")) + "</span>";
+      else if ((lw.dox != null && lw.dox < 4) || (lw.nh3 != null && lw.nh3 > 0.5)) pills += '<span class="pill warn">' + esc(t("cutFeed")) + "</span>";
+    }
+    var w = weightNow(p);
+    if (w && w.sampleAge == null) pills += '<span class="pill warn">' + esc(t("noSample")) + "</span>";
+    else if (w && w.sampleAge > 15) pills += '<span class="pill warn">' + esc(t("sampleOld", { n: w.sampleAge })) + "</span>";
+    var h = '<div class="row stripe-' + (bs.s === "due" ? "warn" : "ok") + '"><div style="flex:1;min-width:0">';
+    var dis = S.live ? "" : " disabled", id = esc(p.id);
+    if (bs.s === "running") {
+      var b = bs.b; perDay += bs.day > 0 ? b.kgDay : 0;
+      var m = b.meals > 0 ? b.meals : 2, pct = bs.day > 0 ? Math.round(bs.day / b.days * 100) : 0;
+      h += name + ' <span class="pill good">' + esc(bs.day > 0 ? t("blockDay", { d: bs.day, n: b.days }) : t("blockStartsOn", { date: dshort(b.date) })) + "</span></div>" +
+        '<div class="s num"><b>' + nf(b.kgDay, 1) + " " + esc(t("perDay")) + "</b> · " + esc(t("perMeal", { m: m, k: nf(b.kgDay / m, 1) })) + " · " + esc(t("blockUntil", { date: dshort(bs.end) })) + "</div>" +
+        '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
+        '<div class="s num" style="margin-top:6px">' + esc(t("blockTotal", { n: nf(b.kgDay * b.days) })) + " · " + esc(t("expectEnd", { w: nf(b.endWt) })) + "</div>";
+      if (b.endWt && sg) {
+        var nd = blockDaysFor(p, b.endWt), nc = calcBlock(p, b.endWt, sg.st.alive, nd, sg.fcr);
+        h += '<div class="s num">' + esc(t("nextBlock", { k: nf(nc.kgDay, 1), date: dshort(addDays(bs.end, 1)) })) + "</div>";
+      }
+      if (pills) h += '<div class="pills">' + pills + "</div>";
+      h += '<div class="plan-act"><button type="button" class="btn ghost" data-act="fedDiff" data-id="' + id + '"' + dis + ">" + esc(t("fedDiff")) + '</button><button type="button" class="btn ghost" data-act="stopBlock" data-id="' + id + '"' + dis + ">" + esc(t("stopRecalc")) + "</button></div>";
+    } else {
+      var due = bs.s === "due";
+      h += name + (due ? ' <span class="pill warn">' + esc(t("blockEnded", { date: dshort(bs.end) })) + "</span>" : "") + "</div>";
+      h += '<div class="s">' + esc(due ? t("weighThenStart") : t("noBlock")) + "</div>";
+      if (sg) h += '<div class="s num"><b>' + esc(t("suggested", { k: nf(sg.c.kgDay, 1), d: sg.days, t: nf(sg.c.total) })) + "</b></div>";
+      if (pills) h += '<div class="pills">' + pills + "</div>";
+      h += '<div class="plan-act">' + (due ? '<button type="button" class="btn ghost" data-act="sampleFor" data-id="' + id + '"' + dis + ">" + esc(t("addSample")) + "</button>" : "") + '<button type="button" class="btn" data-act="startBlock" data-id="' + id + '"' + dis + ">" + esc(due ? t("startNext") : t("startBlock")) + "</button></div>";
+    }
+    return h + "</div></div>";
+  }).join("");
+  return '<section><div class="sec-h"><h2>' + esc(t("feedPlan")) + '</h2></div><div class="note">' + esc(t("planTotal", { n: nf(perDay, 1) })) + '</div><div class="list" style="margin-top:8px">' + cards + '</div><div class="note">' + esc(t("planNote")) + "</div></section>";
+}
+
+function formBlock(p) {
+  var sg = blockStart(p); if (!sg) { flash(t("needSeed")); return; }
+  var bs = blockState(p), N = sg.st.alive, w0 = sg.w.wt, fcr = sg.fcr;
+  var rate = lastFeedRate(p.id);
+  var fields = [
+    { id: "date", label: t("blkStart"), type: "date", req: true },
+    { id: "days", label: t("blkDays"), type: "select", opts: [["5", "5"], ["7", "7"], ["10", "10"], ["15", "15"], ["20", "20"]] },
+    { id: "kgDay", label: t("blkKg"), type: "number", req: true },
+    { id: "meals", label: t("meals"), type: "number", step: "1" },
+    { id: "rate", label: t("feedRate"), type: "number", full: true },
+    { id: "hint", type: "hint", text: "" }
+  ];
+  var fn = async function (v) {
+    var d = parseInt(v.days, 10);
+    await addDoc("entries", { type: "block", ts: Date.now(), pondId: p.id, date: v.date, days: d, kgDay: v.kgDay, meals: v.meals, rate: v.rate, startWt: Math.round(w0), endWt: Math.round(endWt(w0, v.kgDay, d, fcr, N)), fcr: fcr });
+  };
+  fn.check = function (v) { return v.kgDay > 0 ? "" : t("required"); };
+  openForm(t("startBlock") + ": " + p.name, fields, { date: today(), days: String(sg.days), kgDay: sg.c.kgDay, meals: p.meals > 0 ? p.meals : 2, rate: rate }, fn);
+  FORM.recalc = function (src) {
+    var d = parseInt($("f_days").value, 10);
+    if (src === "days") $("f_kgDay").value = calcBlock(p, w0, N, d, fcr).kgDay;
+    var kg = num($("f_kgDay").value) || 0, hint = t("blockHint", { k: nf(kg, 1), d: d, t: nf(kg * d), w: nf(endWt(w0, kg, d, fcr, N)), q: t("q_" + sg.fq), f: fcr });
+    if (bs.s === "due" && bs.ago > 1) hint += " " + t("blockHintGap", { date: dshort(bs.end), next: dshort(addDays(bs.end, 1)) });
+    $("f_hint").textContent = hint;
+  };
+  FORM.recalc("init");
+}
+function formFedDiff(p) {
+  var bs = blockState(p); if (bs.s !== "running") return;
+  var b = bs.b, sg = blockStart(p), N = sg ? sg.st.alive : pondStats(p).alive;
+  var fn = async function (v) {
+    var d = {}; for (var k in b) if (k !== "id") d[k] = b[k];
+    d.kgDay = v.kgDay; d.endWt = Math.round(endWt(b.startWt, v.kgDay, b.days, b.fcr || 1.8, N));
+    await setDoc("entries", b.id, d);
+  };
+  fn.check = function (v) { return v.kgDay > 0 ? "" : t("required"); };
+  openForm(t("fedDiff") + ": " + p.name, [{ id: "kgDay", label: t("fedActual"), type: "number", req: true, full: true }], { kgDay: b.kgDay }, fn);
+}
+async function stopBlock(p) {
+  var bs = blockState(p); if (bs.s !== "running" || bs.day < 1) return;
+  var b = bs.b, N = pondStats(p).alive, d = {}; for (var k in b) if (k !== "id") d[k] = b[k];
+  d.days = bs.day - 1; d.endWt = Math.round(endWt(b.startWt, b.kgDay, bs.day, b.fcr || 1.8, N));
+  await setDoc("entries", b.id, d);
+}
+
 /* ---- Feed and growth ---- */
 function viewFeed() {
   var act = visiblePonds().filter(function (p) { return p.status !== "harvested"; });
-  var h = '<div class="sec-h"><h2>' + esc(t("growth")) + '</h2></div><div class="actions" style="justify-content:flex-start">' + addBtn("addFeed", t("addFeed")) + addBtn("addSample", t("addSample"), "ghost") + addBtn("addMort", t("addMort"), "ghost") + "</div>";
+  var h = '<div class="sec-h"><h2>' + esc(t("growth")) + '</h2></div><div class="actions" style="justify-content:flex-start">' + addBtn("addFeed", t("addFeed")) + addBtn("addSample", t("addSample"), "ghost") + addBtn("addMort", t("addMort"), "ghost") + "</div>" + planHtml();
   if (act.length) {
     h += '<div class="list">' + act.map(function (p) {
       var s = pondStats(p);
       return '<div class="row"><div style="flex:1"><div class="t">' + esc(p.name) + '</div><div class="kv num"><div><span>' + esc(t("doc")) + "</span><b>" + (s.doc == null ? "–" : s.doc) + "</b></div><div><span>" + esc(t("avgWt")) + "</span><b>" + nf(s.lastWt) + " g</b></div><div><span>" + esc(t("feedUsed")) + "</span><b>" + nf(s.feedKg) + " kg</b></div><div><span>" + esc(t("fcr")) + "</span><b>" + (s.fcr == null ? "–" : nf(s.fcr, 2)) + "</b></div><div><span>" + esc(t("alive")) + "</span><b>" + nf(s.alive) + "</b></div></div></div></div>";
     }).join("") + '</div><div class="note">' + esc(t("fcrNote")) + "</div>";
   }
-  var rows = entryRows(["feed", "sample", "mort"]);
+  var rows = entryRows(["block", "feed", "sample", "mort"]);
   return h + (rows ? '<section><div class="sec-h"><h2>' + esc(t("recent")) + '</h2></div><div class="list">' + rows + "</div></section>" : (act.length ? "" : emptyBox("emptyFeedT", "emptyFeedB")));
 }
 
@@ -350,7 +523,7 @@ function openSheet(html) {
 function closeSheet() { $("scrim").hidden = true; $("sheet").innerHTML = ""; FORM = null; }
 
 function fieldHtml(f, v) {
-  if (f.type === "hint") return '<div class="note full">' + esc(f.text) + "</div>";
+  if (f.type === "hint") return '<div class="note full" id="f_hint">' + esc(f.text) + "</div>";
   var id = "f_" + f.id, val = v == null ? "" : v, h = '<div class="field' + (f.full ? " full" : "") + '"><label for="' + id + '">' + esc(f.label) + (f.req ? " *" : "") + "</label>";
   if (f.type === "select") h += '<select id="' + id + '">' + f.opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(val) ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("") + "</select>";
   else if (f.type === "textarea") h += '<textarea id="' + id + '" rows="2">' + esc(val) + "</textarea>";
@@ -395,18 +568,24 @@ function saveEntry(type, keys) {
 }
 
 function formPond(p) {
-  var sites = sitesList(), def = p ? p : { stockDate: today(), species: "pangasius", site: S.site || (sites[0] || "") };
+  var sites = sitesList(), def = p ? Object.assign({ feedMode: "auto", quality: "auto", blockDays: "0", meals: 2 }, p) : { stockDate: today(), species: "pangasius", site: S.site || (sites[0] || ""), feedMode: "auto", quality: "auto", blockDays: "0", meals: 2 };
   var fn = async function (v) {
-    var d = { name: v.name, site: v.site, species: v.species, area: v.area, stockDate: v.stockDate, seed: v.seed, seedWt: v.seedWt, seedCost: v.seedCost, status: p ? p.status || "active" : "active" };
+    var d = { name: v.name, site: v.site, species: v.species, area: v.area, stockDate: v.stockDate, seed: v.seed, seedWt: v.seedWt, seedCost: v.seedCost, feedMode: v.feedMode, feedPct: v.feedMode === "fixed" ? v.feedPct : null, quality: v.quality, blockDays: v.blockDays, meals: v.meals, status: p ? p.status || "active" : "active" };
     if (p && p.harvestDate) d.harvestDate = p.harvestDate;
     if (p) await setDoc("ponds", p.id, d); else await addDoc("ponds", d);
   };
+  fn.check = function (v) { return v.feedMode === "fixed" && !(v.feedPct > 0) ? t("required") : ""; };
   openForm(p ? t("editPond") : t("addPond"), [
     { id: "name", label: t("pName"), req: true, full: true },
     { id: "site", label: t("pSite") }, { id: "species", label: t("pSpecies"), type: "select", opts: [["pangasius", t("pang")], ["imc", t("imc")]] },
     { id: "area", label: t("pArea"), type: "number" }, { id: "stockDate", label: t("pStock"), type: "date" },
     { id: "seed", label: t("pSeed"), type: "number", step: "1" }, { id: "seedWt", label: t("pSeedWt"), type: "number" },
-    { id: "seedCost", label: t("pSeedCost"), type: "number", full: true }
+    { id: "seedCost", label: t("pSeedCost"), type: "number", full: true },
+    { id: "feedMode", label: t("feedMode"), type: "select", opts: [["auto", t("feedAuto")], ["fixed", t("feedFixed")]] },
+    { id: "feedPct", label: t("feedPct"), type: "number" },
+    { id: "quality", label: t("quality"), type: "select", opts: [["auto", t("qAuto")], ["good", t("q_good")], ["avg", t("q_avg")], ["poor", t("q_poor")]] },
+    { id: "blockDays", label: t("blockLen"), type: "select", opts: [["0", t("blockAuto")], ["7", "7"], ["10", "10"], ["15", "15"], ["20", "20"]] },
+    { id: "meals", label: t("meals"), type: "number", step: "1" }
   ], def, fn);
 }
 function formWater() {
@@ -439,9 +618,9 @@ function formFeed() {
   };
   openForm(t("addFeed"), fields, { date: today() }, fn);
 }
-function formSample() {
+function formSample(pid) {
   if (needPond()) return;
-  openForm(t("addSample"), [pondField(), dateField(), { id: "avgWt", label: t("sampleWt"), type: "number", req: true }, { id: "n", label: t("sampleN"), type: "number", step: "1" }, noteField()], { date: today() }, saveEntry("sample", ["pondId", "date", "avgWt", "n", "note"]));
+  openForm(t("addSample"), [pondField(), dateField(), { id: "avgWt", label: t("sampleWt"), type: "number", req: true }, { id: "n", label: t("sampleN"), type: "number", step: "1" }, noteField()], { date: today(), pondId: pid }, saveEntry("sample", ["pondId", "date", "avgWt", "n", "note"]));
 }
 function formMort() {
   if (needPond()) return;
@@ -537,6 +716,9 @@ function formChangePw() {
   ], {}, async function (v) { await api("POST", "/api/me/password", { oldPassword: v.oldPassword, newPassword: v.newPassword }); });
 }
 
+document.addEventListener("change", function (e) { if (FORM && FORM.recalc && e.target.id === "f_days") FORM.recalc("days"); });
+document.addEventListener("input", function (e) { if (FORM && FORM.recalc && e.target.id === "f_kgDay") FORM.recalc("kg"); });
+
 /* ---- events ---- */
 document.addEventListener("click", async function (ev) {
   if (ev.target.id === "scrim") { closeSheet(); return; }
@@ -548,6 +730,10 @@ document.addEventListener("click", async function (ev) {
     else if (a === "addWater") formWater();
     else if (a === "addFeed") formFeed();
     else if (a === "addSample") formSample();
+    else if (a === "sampleFor") formSample(id);
+    else if (a === "startBlock") { var pb = pondById(id); if (pb) formBlock(pb); }
+    else if (a === "fedDiff") { var pf = pondById(id); if (pf) formFedDiff(pf); }
+    else if (a === "stopBlock") { var ps2 = pondById(id); if (ps2 && armed(b, t("confirmStop"))) await stopBlock(ps2); }
     else if (a === "addMort") formMort();
     else if (a === "addExpense") formExpense();
     else if (a === "addSale") formSale();
