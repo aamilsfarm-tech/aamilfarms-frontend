@@ -478,7 +478,8 @@ function formFedDiff(p) {
 async function stopBlock(p) {
   var bs = blockState(p); if (bs.s !== "running" || bs.day < 1) return;
   var b = bs.b, N = pondStats(p).alive, d = {}; for (var k in b) if (k !== "id") d[k] = b[k];
-  d.days = bs.day - 1; d.endWt = Math.round(endWt(b.startWt, b.kgDay, bs.day, b.fcr || 1.8, N));
+  if (bs.day - 1 < 1) { await delDoc("entries", b.id); return; }
+  d.days = bs.day - 1; d.endWt = Math.round(endWt(b.startWt, b.kgDay, d.days, b.fcr || 1.8, N));
   await setDoc("entries", b.id, d);
 }
 
