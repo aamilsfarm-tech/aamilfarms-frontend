@@ -112,3 +112,5 @@ nav.tabs button[aria-current="page"] { color: var(--accent); }
 .ico-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .sep { border: 0; border-top: 1px solid var(--line); margin: 2px 0; width: 100%; }
 
+.plan-act { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.plan-in { width: 96px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; min-height: 40px; }
