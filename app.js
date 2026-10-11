@@ -283,7 +283,7 @@ function viewPonds() {
 function entryLine(e) {
   var tp = e.type;
   if (tp === "water") return [e.ph != null ? "pH " + e.ph : "", e.dox != null ? "DO " + e.dox : "", e.temp != null ? e.temp + " °C" : "", e.nh3 != null ? "NH₃ " + e.nh3 : ""].filter(Boolean).join(" · ");
-  if (tp === "feed") return nf(e.kg, 1) + " kg" + (e.rate ? " @ ₹" + nf(e.rate, 1) : "");
+  if (tp === "feed") return nf(e.kg, 1) + " kg" + (e.rate ? " @ ₹" + nf(e.rate, 1) : "") + (e.from ? " · " + dshort(e.from) + " – " + dshort(e.date) : "");
   if (tp === "sample") return nf(e.avgWt) + " g" + (e.n ? " (" + e.n + ")" : "");
   if (tp === "mort") return nf(e.count) + " " + t("eMort").toLowerCase();
   if (tp === "expense") return (e.cat ? t(e.cat) + " · " : "") + inr(e.amount || 0);
@@ -350,6 +350,7 @@ function openSheet(html) {
 function closeSheet() { $("scrim").hidden = true; $("sheet").innerHTML = ""; FORM = null; }
 
 function fieldHtml(f, v) {
+  if (f.type === "hint") return '<div class="note full">' + esc(f.text) + "</div>";
   var id = "f_" + f.id, val = v == null ? "" : v, h = '<div class="field' + (f.full ? " full" : "") + '"><label for="' + id + '">' + esc(f.label) + (f.req ? " *" : "") + "</label>";
   if (f.type === "select") h += '<select id="' + id + '">' + f.opts.map(function (o) { return '<option value="' + esc(o[0]) + '"' + (String(o[0]) === String(val) ? " selected" : "") + ">" + esc(o[1]) + "</option>"; }).join("") + "</select>";
   else if (f.type === "textarea") h += '<textarea id="' + id + '" rows="2">' + esc(val) + "</textarea>";
@@ -364,6 +365,7 @@ async function submitForm() {
   if (!FORM) return;
   var vals = {}, bad = false;
   FORM.fields.forEach(function (f) {
+    if (f.type === "hint") return;
     var el = $("f_" + f.id), v = el.value;
     if (f.type === "number") v = num(v); else v = String(v).trim();
     if (f.req && (v === null || v === "")) bad = true;
@@ -415,7 +417,27 @@ function formWater() {
 }
 function formFeed() {
   if (needPond()) return;
-  openForm(t("addFeed"), [pondField(), dateField(), { id: "kg", label: t("feedKg"), type: "number", req: true }, { id: "rate", label: t("feedRate"), type: "number" }, noteField()], { date: today() }, saveEntry("feed", ["pondId", "date", "kg", "rate", "note"]));
+  var ps = visiblePonds().filter(function (p) { return p.status !== "harvested"; });
+  if (!ps.length) ps = visiblePonds();
+  var fields = [
+    { id: "from", label: t("feedFrom"), type: "date", full: true },
+    { id: "date", label: t("feedTo"), type: "date", req: true },
+    { id: "rate", label: t("feedRate"), type: "number" },
+    { id: "hint", type: "hint", text: t("feedHint") }
+  ];
+  ps.forEach(function (p) { fields.push({ id: "kg_" + p.id, label: p.name + " (kg)", type: "number" }); });
+  fields.push(noteField());
+  var fn = async function (v) {
+    for (var i = 0; i < ps.length; i++) {
+      var kg = v["kg_" + ps[i].id];
+      if (kg != null && kg > 0) await addDoc("entries", { type: "feed", ts: Date.now(), pondId: ps[i].id, date: v.date, from: v.from && v.from < v.date ? v.from : null, kg: kg, rate: v.rate, note: v.note });
+    }
+  };
+  fn.check = function (v) {
+    if (v.from && v.from > v.date) return t("badPeriod");
+    return ps.some(function (p) { var k = v["kg_" + p.id]; return k != null && k > 0; }) ? "" : t("required");
+  };
+  openForm(t("addFeed"), fields, { date: today() }, fn);
 }
 function formSample() {
   if (needPond()) return;

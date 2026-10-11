@@ -1,6 +1,6 @@
 "use strict";
 // Offline app shell. API calls are never cached here: the app keeps its own data cache and sync queue.
-var CACHE = "pond-ledger-v1";
+var CACHE = "pond-ledger-v2";
 var SHELL = ["./", "index.html", "app.css", "app.js", "i18n.js", "config.js", "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png"];
 
 self.addEventListener("install", function (e) {
